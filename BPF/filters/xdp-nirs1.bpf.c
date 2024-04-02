@@ -1,4 +1,6 @@
+#include "../common.h"
 #include "../vmlinux.h"
+
 #include <bpf/bpf_helpers.h>
 
 #define bpf_printk(fmt, ...)					\
@@ -46,7 +48,7 @@ int nirs1(struct xdp_md *ctx)
     }
     uint16_t ethertype;
 
-    if (eth->h_proto != 0x0008)
+    if (eth->h_proto != htons(0x0800))
     {
         bpf_printk("[!] Error, no ipv4\n");
         return XDP_PASS;
@@ -82,13 +84,13 @@ int nirs1(struct xdp_md *ctx)
         struct dip_proto_dport key = {0};
         struct tsmp_sip_sport new_value = {0};
 
-        key.dst_ip = iph->daddr;
+        key.dst_ip = htonl(iph->daddr);
         key.ip_proto = iph->protocol;
-        key.dst_port = tcph->dest;
+        key.dst_port = htons(tcph->dest);
 
         new_value.timestamp = bpf_ktime_get_boot_ns();
-        new_value.src_ip = iph->saddr;
-        new_value.src_port = tcph->source;
+        new_value.src_ip = htonl(iph->saddr);
+        new_value.src_port = htons(tcph->source);
 
         bpf_map_update_elem(&_nir1_map, &key, &new_value, BPF_ANY);
 
@@ -109,13 +111,13 @@ int nirs1(struct xdp_md *ctx)
         struct dip_proto_dport key = {0};
         struct tsmp_sip_sport new_value = {0};
 
-        key.dst_ip = iph->daddr;
+        key.dst_ip = htonl(iph->daddr);
         key.ip_proto = iph->protocol;
-        key.dst_port = udph->dest;
+        key.dst_port = htons(udph->dest);
 
         new_value.timestamp = bpf_ktime_get_boot_ns();
-        new_value.src_ip = iph->saddr;
-        new_value.src_port = udph->source;
+        new_value.src_ip = htonl(iph->saddr);
+        new_value.src_port = htons(udph->source);
 
         bpf_map_update_elem(&_nir1_map, &key, &new_value, BPF_ANY);
 
@@ -135,13 +137,13 @@ int nirs1(struct xdp_md *ctx)
         struct dip_proto_dport key = {0};
         struct tsmp_sip_sport new_value = {0};
 
-        key.dst_ip = iph->daddr;
+        key.dst_ip = htonl(iph->daddr);
         key.ip_proto = iph->protocol;
-        key.dst_port = sctph->dest;
+        key.dst_port = htons(sctph->dest);
 
         new_value.timestamp = bpf_ktime_get_boot_ns();
-        new_value.src_ip = iph->saddr;
-        new_value.src_port = sctph->source;
+        new_value.src_ip = htonl(iph->saddr);
+        new_value.src_port = htons(sctph->source);
 
         bpf_map_update_elem(&_nir1_map, &key, &new_value, BPF_ANY);
 

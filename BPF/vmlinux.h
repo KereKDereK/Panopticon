@@ -1,3 +1,5 @@
+#include <byteswap.h>
+
 #ifndef __VMLINUX_H__
 #define __VMLINUX_H__
 
@@ -99,6 +101,16 @@ typedef unsigned int gfp_t;
 typedef unsigned int fmode_t;
 
 typedef u64 phys_addr_t;
+
+u16 htons (u16 x)
+{
+  return __bswap_16 (x);
+}
+
+uint32_t htonl (uint32_t x)
+{
+  return __bswap_32 (x);
+}
 
 typedef struct {
 	int counter;
