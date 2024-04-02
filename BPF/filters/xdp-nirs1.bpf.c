@@ -32,7 +32,7 @@ int nirs1(struct xdp_md *ctx)
 {
     if (!ctx)
     {
-        bpf_printk("[!] Poslan nahuy no ctx\n");
+        bpf_printk("[!] Error, no ctx\n");
         return XDP_PASS;
     }
     void* data_end = (void*)(long)ctx->data_end;
@@ -41,14 +41,14 @@ int nirs1(struct xdp_md *ctx)
 
      if (eth + 1 > (struct ethhdr *)data_end)
     {
-        bpf_printk("[!] Poslan nahuy no eth data\n");
+        bpf_printk("[!] Error, no eth data\n");
         return XDP_DROP;
     }
     uint16_t ethertype;
 
     if (eth->h_proto != 0x0008)
     {
-        bpf_printk("[!] Poslan nahuy no ipv4\n");
+        bpf_printk("[!] Error, no ipv4\n");
         return XDP_PASS;
     }
 
@@ -58,7 +58,7 @@ int nirs1(struct xdp_md *ctx)
 
     if (iph + 1 > (struct iphdr *)data_end)
     {
-        bpf_printk("[!] Poslan nahuy no ipheader\n");
+        bpf_printk("[!] Error, no ipheader\n");
         return XDP_DROP;
     }
 
@@ -70,12 +70,12 @@ int nirs1(struct xdp_md *ctx)
             tcph = data + sizeof(struct ethhdr) + (iph->ihl * 4);
         else
         {
-            bpf_printk("[!] Poslan nahuy ipv6\n");
+            bpf_printk("[!] Error, ipv6\n");
             return XDP_DROP;
         }
 
         if (tcph + 1 > (struct tcphdr *)data_end){
-            bpf_printk("[!] Poslan nahuy no tcp header\n");
+            bpf_printk("[!] Error, no tcp header\n");
             return XDP_DROP;
         }
 
@@ -103,7 +103,7 @@ int nirs1(struct xdp_md *ctx)
             return XDP_DROP;
         
         if (udph + 1 > (struct udphdr *)data_end){
-            bpf_printk("[!] Poslan nahuy no udp header\n");
+            bpf_printk("[!] Error, no udp header\n");
             return XDP_DROP;
         }
         struct dip_proto_dport key = {0};
@@ -129,7 +129,7 @@ int nirs1(struct xdp_md *ctx)
             return XDP_DROP;
         
         if (sctph + 1 > (struct sctphdr *)data_end){
-            bpf_printk("[!] Poslan nahuy no sctph header\n");
+            bpf_printk("[!] Error, no sctph header\n");
             return XDP_DROP;
         }
         struct dip_proto_dport key = {0};
@@ -148,7 +148,7 @@ int nirs1(struct xdp_md *ctx)
         return XDP_PASS;
     }
     else{
-        bpf_printk("[!] Poslan nahuy unknown proto\n");
+        bpf_printk("[!] Error, unknown proto\n");
         return XDP_DROP;
     }
     bpf_printk("[!] Func end\n");
