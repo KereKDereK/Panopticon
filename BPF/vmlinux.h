@@ -1,3 +1,4 @@
+#pragma once
 #include <byteswap.h>
 
 #ifndef __VMLINUX_H__
