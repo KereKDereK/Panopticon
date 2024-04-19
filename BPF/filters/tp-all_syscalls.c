@@ -2,21 +2,28 @@
 #include <err.h>
 #include <unistd.h>
 #include "tp-all_syscalls.skel.h"
+#define MAX_STACK_RAWTP 100
 
-unsigned int target_pid = 2039;
+unsigned int target_pid = 2723;
 unsigned int key = 1;
 unsigned int syscalls_blacklist[456] = {0};
 
 struct event{
-    int pid;
+    __u32 pid;
     long syscall_number;
+    int user_stack_size;
+	int user_stack_buildid_size;
+    __u64 user_stack[MAX_STACK_RAWTP];
+	struct bpf_stack_build_id user_stack_buildid[MAX_STACK_RAWTP];
+    __u64 timestamp;
+    bool is_not_good;
 };
 
 static int event_logger(void* ctx, void* data, size_t len){
     struct event* evt = (struct event*)data;
     if(evt->pid == getpid())
         return 1;
-    //printf("PID = %d\tSID = %ld\t", evt->pid, evt->syscall_number);
+    printf("%ld\n", evt->user_stack[0]);
     return 0;
 }
 
