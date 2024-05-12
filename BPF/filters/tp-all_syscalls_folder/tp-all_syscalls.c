@@ -2,7 +2,6 @@
 #include <err.h>
 #include <unistd.h>
 #include "tp-all_syscalls.skel.h"
-#define MAX_STACK_RAWTP 100
 
 unsigned int target_pid = 2723;
 unsigned int key = 1;
@@ -11,25 +10,21 @@ unsigned int syscalls_blacklist[456] = {0};
 struct event{
     __u32 pid;
     long syscall_number;
-    int user_stack_size;
-	int user_stack_buildid_size;
-    __u64 user_stack[MAX_STACK_RAWTP];
-	struct bpf_stack_build_id user_stack_buildid[MAX_STACK_RAWTP];
     __u64 timestamp;
     bool is_not_good;
 };
 
-static int event_logger(void* ctx, void* data, size_t len){
+static int event_logger_syscalls(void* ctx, void* data, size_t len){
     struct event* evt = (struct event*)data;
     if(evt->pid == getpid())
         return 1;
-    printf("%ld\n", evt->user_stack[0]);
     return 0;
 }
 
-
 int main(int argc, char **argv)
 {
+    if (argc < 2)
+        return 0;
     syscalls_blacklist[0] = 1;
     syscalls_blacklist[1] = 1;
     struct tp_all_syscalls_bpf *obj;
@@ -39,7 +34,7 @@ int main(int argc, char **argv)
         err(1, "failed to open and/or load BPF object\n");
 
     int rbFd = bpf_object__find_map_fd_by_name(obj->obj, "_tp_syscalls_ringbuf");
-    struct ring_buffer* ringBuffer = ring_buffer__new(rbFd, event_logger, NULL, NULL);
+    struct ring_buffer* ringBuffer = ring_buffer__new(rbFd, event_logger_syscalls, NULL, NULL);
     if(!ringBuffer){
         printf("Ring buffer failed.\n");
         return 1;

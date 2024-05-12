@@ -6,10 +6,6 @@
 struct event{
     u32 pid;
     long syscall_number;
-    int user_stack_size;
-	int user_stack_buildid_size;
-    __u64 user_stack[MAX_STACK_RAWTP];
-	struct bpf_stack_build_id user_stack_buildid[MAX_STACK_RAWTP];
     u64 timestamp;
     bool is_not_good;
 };
@@ -60,14 +56,8 @@ int tp_all_syscalls(struct trace_event_raw_sys_enter *ctx)
         bpf_printk("Can't reserve");
         return 1;
     }
-    max_len = MAX_STACK_RAWTP * sizeof(__u64);
-    max_buildid_len = MAX_STACK_RAWTP * sizeof(struct bpf_stack_build_id);
 
-    evt->user_stack_size = bpf_get_stack(ctx, evt->user_stack, max_len,
-					    BPF_F_USER_STACK);
-	evt->user_stack_buildid_size = bpf_get_stack(
-		ctx, evt->user_stack_buildid, max_buildid_len,
-		BPF_F_USER_STACK | BPF_F_USER_BUILD_ID);
+    evt->pid = pid;
     long syscall_id = 0;
     syscall_id = ctx->id;
     evt->syscall_number = syscall_id;

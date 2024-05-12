@@ -140,11 +140,6 @@ static int event_handler(void *_ctx, void *data, size_t size)
 	return 0;
 }
 
-static void show_help(const char *progname)
-{
-	printf("Usage: %s [-f <frequency>] [-h]\n", progname);
-}
-
 int main(int argc, char * const argv[])
 {
 	const char *online_cpus_file = "/sys/devices/system/cpu/online";
