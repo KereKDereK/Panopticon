@@ -8,9 +8,9 @@ struct event{
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 8192); //subject to change
-    __type(key, u32);
-    __type(value, long unsigned int);
+    __uint(max_entries, 65536); //subject to change
+    __type(key, u16);
+    __type(value, u32);
 } _kprobe_nir1_map SEC(".maps");
 
 struct {
