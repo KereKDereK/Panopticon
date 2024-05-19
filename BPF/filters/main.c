@@ -19,6 +19,9 @@
 sqlite3 *db;
 
 /*  MISC  */
+char* current_stacktrace;
+struct ring_buffer *ring_buf = NULL;
+int session = 0;
 
 #define SEC_TO_NS(sec) ((sec)*1000000000)
 
@@ -109,7 +112,7 @@ int insert_syscall(int session_id, long syscall_id, __u64 timestamp, char* stack
     int rc; 
     rc = sqlite3_open("panopticon.db", &db);
 
-    char buffer[1000];
+    char buffer[10000];
     sprintf(buffer, "INSERT INTO SYSCALL_EVENTS (SESSION_ID, SYSCALL_ID, SYSCALL_TIMESTAMP, SYSCALL_STACKTRACE) " 
                     "VALUES (%d, %ld, %lld, \"%s\");", session_id, syscall_id, timestamp, stack_trace);
     rc = sqlite3_exec(db, buffer, NULL, NULL, NULL);
@@ -189,12 +192,14 @@ struct event{
     bool is_not_good;
 };
 
-static int event_logger_syscalls(void* ctx, void* data, size_t len){
-    return 1;
+int event_logger_syscalls(void* ctx, void* data, size_t len){
     struct event* evt = (struct event*)data;
+	ring_buffer__poll(ring_buf, -1);
     if(evt->pid == getpid())
         return 1;
-    printf("%d:%ld:%lld\n", evt->pid, evt->syscall_number, evt->timestamp);
+    //printf("%d:%ld:%lld\n", evt->pid, evt->syscall_number, evt->timestamp);
+	//printf("Timestamp: %llu\n", bpf_timestamp_to_epoch_ns(evt->timestamp));
+	insert_syscall(session, evt->syscall_number, bpf_timestamp_to_epoch_ns(evt->timestamp), current_stacktrace);
     return 0;
 }
 
@@ -213,13 +218,12 @@ static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
 
 static struct blazesym *symbolizer;
 
-static void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
+void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
 {
 	const struct blazesym_result *result;
 	const struct blazesym_csym *sym;
 	sym_src_cfg src;
 	int i, j;
-    char final_trace[10000];
     int offset = 0;
 
 	if (pid) {
@@ -236,7 +240,7 @@ static void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
 	for (i = 0; i < stack_sz; i++) {
 		if (!result || result->size <= i || !result->entries[i].size) {
 			// printf("  %d [<%016llx>]\n", i, stack[i]);
-            offset += sprintf(final_trace + offset, "  %d [<%016llx>]\n", i, stack[i]);
+            offset += sprintf(current_stacktrace + offset, "  %d [<%016llx>]\n", i, stack[i]);
 
 			continue;
 		}
@@ -249,7 +253,7 @@ static void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
 				//        stack[i] - sym->start_address,
 				//        sym->path, sym->line_no);
 
-                offset += sprintf(final_trace + offset, "  %d [<%016llx>] %s+0x%llx %s:%ld\ttsp: \n",
+                offset += sprintf(current_stacktrace + offset, "  %d [<%016llx>] %s+0x%llx %s:%ld\ttsp: \n",
 				       i, stack[i], sym->symbol,
 				       stack[i] - sym->start_address,
 				       sym->path, sym->line_no);
@@ -258,7 +262,7 @@ static void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
 				// printf("  %d [<%016llx>] %s+0x%llx\n",
 				//        i, stack[i], sym->symbol,
 				//        stack[i] - sym->start_address);
-                offset += sprintf(final_trace + offset, "  %d [<%016llx>] %s+0x%llx\n",
+                offset += sprintf(current_stacktrace + offset, "  %d [<%016llx>] %s+0x%llx\n",
 				       i, stack[i], sym->symbol,
 				       stack[i] - sym->start_address);
 			}
@@ -267,27 +271,27 @@ static void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
 
 		// printf("  %d [<%016llx>]\n", i, stack[i]);
 
-        offset += sprintf(final_trace + offset, "  %d [<%016llx>]\n", i, stack[i]);
+        offset += sprintf(current_stacktrace + offset, "  %d [<%016llx>]\n", i, stack[i]);
 		for (j = 0; j < result->entries[i].size; j++) {
 			sym = &result->entries[i].syms[j];
 			if (sym->path && sym->path[0]) {
 				// printf("        %s+0x%llx %s:%ld\n",
 				//        sym->symbol, stack[i] - sym->start_address,
 				//        sym->path, sym->line_no);
-                offset += sprintf(final_trace + offset, "        %s+0x%llx %s:%ld\n",
+                offset += sprintf(current_stacktrace + offset, "        %s+0x%llx %s:%ld\n",
 				       sym->symbol, stack[i] - sym->start_address,
 				       sym->path, sym->line_no);
 			} else {
 				// printf("        %s+0x%llx\n", sym->symbol,
 				//        stack[i] - sym->start_address);
-                offset += sprintf(final_trace + offset, "        %s+0x%llx\n", sym->symbol,
+                offset += sprintf(current_stacktrace + offset, "        %s+0x%llx\n", sym->symbol,
 				       stack[i] - sym->start_address);
 			}
 		}
 	}
 
-    printf("%s", final_trace);
-
+	current_stacktrace[offset + 1] = "\0";
+	//printf("%s\n", current_stacktrace);
 	blazesym_result_free(result);
 }
 
@@ -313,11 +317,8 @@ static int stacktrace_event_handler(void *_ctx, void *data, size_t size)
 	if (event->ustack_sz > 0) {
 		//printf("Userspace:\n");
 		show_stack_trace(event->ustack, event->ustack_sz / sizeof(__u64), event->pid);
-	} else {
-		printf("No Userspace Stack\n");
 	}
 
-	printf("\n");
 	return 0;
 }
 
@@ -327,6 +328,8 @@ int main(int argc, char **argv)
         return 0;
     target_pid = atoi(argv[1]);
     create_db();
+
+	current_stacktrace = (char*)calloc(100000, sizeof(char));
     
     struct timespec tms;
 
@@ -334,7 +337,7 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    int session = get_max_session_id() + 1;
+    session = get_max_session_id() + 1;
     insert_session(session, "test", tms);
 
 
@@ -372,7 +375,7 @@ int main(int argc, char **argv)
 	struct tp_stacktrace_bpf *skel = NULL;
 	struct perf_event_attr attr;
 	struct bpf_link **links = NULL;
-	struct ring_buffer *ring_buf = NULL;
+
 	int num_cpus, num_online_cpus;
 	int *pefds = NULL, pefd;
 	int argp =0;
@@ -450,9 +453,9 @@ int main(int argc, char **argv)
 		}
 	}
 
-    while(ring_buffer__poll(ring_buf, -1) >= 0 || 1){
-       ring_buffer__consume(ringBuffer);
-       sleep(1);
+    while(true){
+       int err = ring_buffer__poll(ringBuffer, -1);
+	   sleep(2);
     }
 
 cleanup:
