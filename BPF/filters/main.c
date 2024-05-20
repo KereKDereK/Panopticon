@@ -77,6 +77,7 @@ int create_db(){
     const char sql4[] = "CREATE TABLE IF NOT EXISTS CALLGRIND_EVENTS("  
                         "CALLGRIND_EVENT_ID INT PRIMARY KEY,"
                         "SESSION_ID INT NOT NULL,"
+						"SYMBOL_NAME TEXT NOT NULL,"
                         "EVENT_TIMESTAMP INT NOT NULL);";
     rc = sqlite3_exec(db, sql4, NULL, NULL, NULL);
 
@@ -96,13 +97,13 @@ int insert_session(int id, char* binary_name, struct timespec tms){
     return 0;          
 }
 
-int insert_callgrind(int session_id, __u64 timestamp){
+int insert_callgrind(int session_id, char* symbol_name,__u64 timestamp){
     int rc; 
     rc = sqlite3_open("panopticon.db", &db);
 
     char buffer[1000];
-    sprintf(buffer, "INSERT INTO CALLGRIND_EVENTS (SESSION_ID, EVENT_TIMESTAMP) " 
-                    "VALUES (%d, %llu);", session_id, timestamp);
+    sprintf(buffer, "INSERT INTO CALLGRIND_EVENTS (SESSION_ID, SYMBOL_NAME, EVENT_TIMESTAMP) " 
+                    "VALUES (%d, \"%s\",%llu);", session_id, symbol_name, timestamp);
     rc = sqlite3_exec(db, buffer, NULL, NULL, NULL);
     sqlite3_close(db);
     return 0;   
@@ -322,6 +323,42 @@ static int stacktrace_event_handler(void *_ctx, void *data, size_t size)
 	return 0;
 }
 
+int parse_callgrind_out() { 
+	FILE *fp;
+    char *line = NULL;
+	char *token = NULL;
+	bool flag = false;
+    size_t len = 0;
+    ssize_t read;
+
+	char* name = NULL;
+	char* end = NULL;
+	__u64 timestamp;
+
+    fp = fopen("../../callgrind_out.txt", "r");
+    if (fp == NULL)
+        exit(EXIT_FAILURE);
+
+    while ((read = getline(&line, &len, fp)) != -1) {
+		while ((token = strsep(&line, "|"))) {
+			if(!flag){
+				name = token;
+				flag = true;
+			}
+			else {
+				timestamp = strtoull(token, &end, 10);
+				flag = false;
+			}
+		}
+        insert_callgrind(session, name, timestamp);
+    }
+
+    fclose(fp);
+    if (line)
+        free(line);
+}
+
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -340,6 +377,7 @@ int main(int argc, char **argv)
     session = get_max_session_id() + 1;
     insert_session(session, "test", tms);
 
+	parse_callgrind_out();
 
     /*  TP ALL SYSCALLS  */
 
