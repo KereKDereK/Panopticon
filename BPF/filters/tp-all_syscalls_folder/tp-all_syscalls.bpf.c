@@ -15,7 +15,8 @@ struct {
     __uint(max_entries, 1); //subject to change
     __type(key, u32);
     __type(value, u32);
-} _tp_pid_var SEC(".maps");
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} _pid_var SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -37,13 +38,13 @@ int tp_all_syscalls(struct trace_event_raw_sys_enter *ctx)
 
     u32 *target_pid;
     u32 key = 1;
-    if (!&_tp_pid_var){
+    if (!&_pid_var){
         return 0;
     }
-    target_pid = bpf_map_lookup_elem(&_tp_pid_var, &key);
+    target_pid = bpf_map_lookup_elem(&_pid_var, &key);
 
     if(!target_pid){
-        bpf_printk("No pid specified. Abort.");
+        //bpf_printk("No pid specified. Abort.");
         return 1;
     }
 
@@ -53,7 +54,7 @@ int tp_all_syscalls(struct trace_event_raw_sys_enter *ctx)
     int max_len, max_buildid_len;
     struct event* evt = bpf_ringbuf_reserve(&_tp_syscalls_ringbuf, sizeof(struct event), 0);
     if (!evt) {
-        bpf_printk("Can't reserve");
+        //bpf_printk("Can't reserve");
         return 1;
     }
 
@@ -86,7 +87,7 @@ int tp_all_syscalls(struct trace_event_raw_sys_enter *ctx)
         return 0;
     }
     
-    bpf_printk("Bad syscall! SIGKILL");
+    //bpf_printk("Bad syscall! SIGKILL");
     //bpf_send_signal(9);
     return 0;
 }

@@ -1,24 +1,27 @@
 #include "../vmlinux.h"
 #include <bpf/bpf_helpers.h>
 
-typedef struct dip_proto_dport {
-        u32 dst_ip;
-        u16 dst_port;
-        u8 ip_proto;
-} _dip_proto_dport;
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256*1024);
+} _xdp_event_ringbuf SEC(".maps");
 
-typedef struct tsmp_sip_sport {
-        u64 timestamp;
-        u32 src_ip;
-        u16 src_port;
-} _tsmp_sip_sport;
+struct event{
+    u32 src_ip;
+    u16 src_port;
+    u32 dst_ip;
+    u16 dst_port;
+    u8 ip_proto;
+    u64 timestamp;
+};
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 8192); //subject to change
-    __type(key, _dip_proto_dport);
-    __type(value, _tsmp_sip_sport);
-} _nir1_map SEC(".maps");
+    __uint(max_entries, 8192*8); //subject to change
+    __type(key, u16);
+    __type(value, u8);
+     __uint(pinning, LIBBPF_PIN_BY_NAME);
+} _xdp_port_map SEC(".maps");
 
 SEC("xdp")
 int nirs1(struct xdp_md *ctx)
@@ -35,7 +38,7 @@ int nirs1(struct xdp_md *ctx)
      if (eth + 1 > (struct ethhdr *)data_end)
     {
         bpf_printk("[!] Error, no eth data\n");
-        return XDP_DROP;
+        return XDP_PASS;
     }
     uint16_t ethertype;
 
@@ -52,7 +55,7 @@ int nirs1(struct xdp_md *ctx)
     if (iph + 1 > (struct iphdr *)data_end)
     {
         bpf_printk("[!] Error, no ipheader\n");
-        return XDP_DROP;
+        return XDP_PASS;
     }
 
     //TODO more types (possible switch case and/or helper func)
@@ -64,28 +67,45 @@ int nirs1(struct xdp_md *ctx)
         else
         {
             bpf_printk("[!] Error, ipv6\n");
-            return XDP_DROP;
+            return XDP_PASS;
         }
 
         if (tcph + 1 > (struct tcphdr *)data_end){
             bpf_printk("[!] Error, no tcp header\n");
-            return XDP_DROP;
+            return XDP_PASS;
         }
 
-        struct dip_proto_dport key = {0};
-        struct tsmp_sip_sport new_value = {0};
+        u8 *is_pid;
+        u16 key = htons(tcph->dest);
+        if (!&_xdp_port_map){
+            return XDP_PASS;
+        }
+        is_pid = bpf_map_lookup_elem(&_xdp_port_map, &key);
 
-        key.dst_ip = htonl(iph->daddr);
-        key.ip_proto = iph->protocol;
-        key.dst_port = htons(tcph->dest);
+        if(!is_pid){
+            bpf_printk("No port. Abort. Port: %u", htons(tcph->dest));
+            return XDP_PASS;
+        }
 
-        new_value.timestamp = bpf_ktime_get_boot_ns();
-        new_value.src_ip = htonl(iph->saddr);
-        new_value.src_port = htons(tcph->source);
+        if (*is_pid == 0){
+            return XDP_PASS;
+        }
 
-        bpf_map_update_elem(&_nir1_map, &key, &new_value, BPF_ANY);
+        struct event* evt = bpf_ringbuf_reserve(&_xdp_event_ringbuf, sizeof(struct event), 0);
+        if (!evt) {
+            bpf_printk("Can't reserve XDP");
+            return 1;
+        }
 
-        return XDP_PASS;
+        evt->src_ip = htonl(iph->saddr);
+        evt->src_port = htons(tcph->source);
+        evt->dst_ip = htonl(iph->daddr);
+        evt->dst_port = htons(tcph->dest);
+        evt->ip_proto = iph->protocol;
+        evt->timestamp = bpf_ktime_get_boot_ns();
+        bpf_ringbuf_submit(evt, 0);
+
+        return XDP_DROP;
     }
     else if (iph->protocol == 17)
     {
@@ -93,59 +113,98 @@ int nirs1(struct xdp_md *ctx)
         if (iph)
             udph = data + sizeof(struct ethhdr) + (iph->ihl * 4);
         else
-            return XDP_DROP;
+            return XDP_PASS;
         
         if (udph + 1 > (struct udphdr *)data_end){
             bpf_printk("[!] Error, no udp header\n");
-            return XDP_DROP;
+            return XDP_PASS;
         }
-        struct dip_proto_dport key = {0};
-        struct tsmp_sip_sport new_value = {0};
 
-        key.dst_ip = htonl(iph->daddr);
-        key.ip_proto = iph->protocol;
-        key.dst_port = htons(udph->dest);
+        u8 *is_pid;
+        u16 key = htons(udph->dest);
+        if (!&_xdp_port_map){
+            return XDP_PASS;
+        }
+        is_pid = bpf_map_lookup_elem(&_xdp_port_map, &key);
 
-        new_value.timestamp = bpf_ktime_get_boot_ns();
-        new_value.src_ip = htonl(iph->saddr);
-        new_value.src_port = htons(udph->source);
+        if(!is_pid){
+            bpf_printk("No port. Abort. Port: %u", htons(udph->dest));
+            return XDP_PASS;
+        }
 
-        bpf_map_update_elem(&_nir1_map, &key, &new_value, BPF_ANY);
+        if (*is_pid == 0){
+            return XDP_PASS;
+        }
 
-        return XDP_PASS;
+        struct event* evt = bpf_ringbuf_reserve(&_xdp_event_ringbuf, sizeof(struct event), 0);
+        if (!evt) {
+            bpf_printk("Can't reserve XDP");
+            return 1;
+        }
+        
+        evt->src_ip = htonl(iph->saddr);
+        evt->src_port = htons(udph->source);
+        evt->dst_ip = htonl(iph->daddr);
+        evt->dst_port = htons(udph->dest);
+        evt->ip_proto = iph->protocol;
+        evt->timestamp = bpf_ktime_get_boot_ns();
+        bpf_ringbuf_submit(evt, 0);
+
+        return XDP_DROP;
+
     }
     else if (iph->protocol == 132){
         struct sctphdr *sctph = {0};
         if (iph)
             sctph = data + sizeof(struct ethhdr) + (iph->ihl * 4);
         else
-            return XDP_DROP;
+            return XDP_PASS;
         
         if (sctph + 1 > (struct sctphdr *)data_end){
             bpf_printk("[!] Error, no sctph header\n");
-            return XDP_DROP;
+            return XDP_PASS;
         }
-        struct dip_proto_dport key = {0};
-        struct tsmp_sip_sport new_value = {0};
 
-        key.dst_ip = htonl(iph->daddr);
-        key.ip_proto = iph->protocol;
-        key.dst_port = htons(sctph->dest);
+        u8 *is_pid;
+        u16 key = htons(sctph->dest);
+        if (!&_xdp_port_map){
+            return XDP_PASS;
+        }
+        is_pid = bpf_map_lookup_elem(&_xdp_port_map, &key);
 
-        new_value.timestamp = bpf_ktime_get_boot_ns();
-        new_value.src_ip = htonl(iph->saddr);
-        new_value.src_port = htons(sctph->source);
+        if(!is_pid){
+            bpf_printk("No port. Abort. Port: %u", htons(sctph->dest));
+            return XDP_PASS;
+        }
 
-        bpf_map_update_elem(&_nir1_map, &key, &new_value, BPF_ANY);
+        if (*is_pid == 0){
+            return XDP_PASS;
+        }
 
-        return XDP_PASS;
+        struct event* evt = bpf_ringbuf_reserve(&_xdp_event_ringbuf, sizeof(struct event), 0);
+        if (!evt) {
+            bpf_printk("Can't reserve XDP");
+            return 1;
+        }
+        
+        
+        evt->src_ip = htonl(iph->saddr);
+        evt->src_port = htons(sctph->source);
+        evt->dst_ip = htonl(iph->daddr);
+        evt->dst_port = htons(sctph->dest);
+        evt->ip_proto = iph->protocol;
+        evt->timestamp = bpf_ktime_get_boot_ns();
+        bpf_ringbuf_submit(evt, 0);
+
+        return XDP_DROP;
+
     }
     else{
         bpf_printk("[!] Error, unknown proto\n");
-        return XDP_DROP;
+        return XDP_PASS;
     }
     bpf_printk("[!] Func end\n");
-    return XDP_DROP;
+    return XDP_PASS;
 }
 
 char LICENSE[] SEC("license") = "GPL";

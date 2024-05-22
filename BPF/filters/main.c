@@ -11,6 +11,8 @@
 #include <bpf/bpf.h>
 #include "tp-all_syscalls_folder/tp-all_syscalls.skel.h"
 #include "tp-stacktrace_folder/tp-stacktrace.skel.h"
+#include "xdp-filter_folder/xdp-nirs1.skel.h"
+#include "kprobe-enrich_folder/kprobe-nirs1.skel.h"
 #include "../blazesym/target/debug/blazesym.h"
 #include <bits/getopt_core.h>
 #include "sqlite3.h"
@@ -21,7 +23,17 @@ sqlite3 *db;
 /*  MISC  */
 char* current_stacktrace;
 struct ring_buffer *ring_buf = NULL;
+struct ring_buffer* xdp_ring_buf = NULL;
 int session = 0;
+
+struct xdp_event{
+    __u32 src_ip;
+    __u16 src_port;
+    __u32 dst_ip;
+    __u16 dst_port;
+    __u8 ip_proto;
+    __u64 timestamp;
+};
 
 #define SEC_TO_NS(sec) ((sec)*1000000000)
 
@@ -121,14 +133,42 @@ int insert_syscall(int session_id, long syscall_id, __u64 timestamp, char* stack
     return 0;    
 }
 
+char* ip_to_str(__u32 src_ip_addr){
+	char* buffer = (char*)calloc(1000, sizeof(char));
+
+	unsigned char bytes[4];
+    bytes[0] = src_ip_addr & 0xFF;
+    bytes[1] = (src_ip_addr >> 8) & 0xFF;
+    bytes[2] = (src_ip_addr >> 16) & 0xFF;
+    bytes[3] = (src_ip_addr >> 24) & 0xFF; 
+
+	sprintf(buffer, "%d.%d.%d.%d\n", bytes[3], bytes[2], bytes[1], bytes[0]);
+	return buffer;
+}
+
 int insert_network(int session_id, __u8 ip_proto, __u32 dst_ip, __u32 dst_port, __u32 src_ip, __u32 src_port, __u64 timestamp){
     int rc; 
     rc = sqlite3_open("panopticon.db", &db);
+	char source[20] = {0};
+	char dest[20] = {0};
 
-    char buffer[1000];
+	unsigned char bytes[4];
+    bytes[0] = src_ip & 0xFF;
+    bytes[1] = (src_ip >> 8) & 0xFF;
+    bytes[2] = (src_ip >> 16) & 0xFF;
+    bytes[3] = (src_ip >> 24) & 0xFF;
+	sprintf(source, "%d.%d.%d.%d\n", bytes[3], bytes[2], bytes[1], bytes[0]);
+
+    bytes[0] = dst_ip & 0xFF;
+    bytes[1] = (dst_ip >> 8) & 0xFF;
+    bytes[2] = (dst_ip >> 16) & 0xFF;
+    bytes[3] = (dst_ip >> 24) & 0xFF;
+	sprintf(dest, "%d.%d.%d.%d\n", bytes[3], bytes[2], bytes[1], bytes[0]);
+
+    char buffer[5000];
     sprintf(buffer, "INSERT INTO NETWORK_EVENTS (SESSION_ID, IP_PROTO, DST_IP, DST_PORT, SRC_IP, SRC_PORT, EVENT_TIMESTAMP) " 
-                    "VALUES (%d, %hu, \"%s\", %d, \"%s\", %d, %llu);", session_id, ip_proto, inet_ntoa(htonl(dst_ip)), dst_port, 
-                                                                       inet_ntoa(htonl(src_ip)), src_port, timestamp);
+                    "VALUES (%d, %hu, \"%s\", %d, \"%s\", %d, %llu);", session_id, ip_proto, dest, dst_port, 
+                                                                       source, src_port, timestamp);
     rc = sqlite3_exec(db, buffer, NULL, NULL, NULL);
     sqlite3_close(db);
     return 0;    
@@ -196,6 +236,8 @@ struct event{
 int event_logger_syscalls(void* ctx, void* data, size_t len){
     struct event* evt = (struct event*)data;
 	ring_buffer__poll(ring_buf, -1);
+	ring_buffer__poll(xdp_ring_buf, -1);
+
     if(evt->pid == getpid())
         return 1;
     //printf("%d:%ld:%lld\n", evt->pid, evt->syscall_number, evt->timestamp);
@@ -296,8 +338,7 @@ void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
 	blazesym_result_free(result);
 }
 
-static int stacktrace_event_handler(void *_ctx, void *data, size_t size)
-{
+static int stacktrace_event_handler(void *_ctx, void *data, size_t size) {
 	struct stacktrace_event *event = data;
 
     if(event->pid != target_pid)
@@ -358,6 +399,12 @@ int parse_callgrind_out() {
         free(line);
 }
 
+int event_logger_network(void* ctx, void* data, size_t len) {
+	struct xdp_event* evt = data;
+	insert_network(session, evt->ip_proto, evt->dst_ip, evt->dst_port, evt->src_ip, evt->src_port, bpf_timestamp_to_epoch_ns(evt->timestamp));
+	return 1;
+}
+
 
 int main(int argc, char **argv)
 {
@@ -395,7 +442,7 @@ int main(int argc, char **argv)
         printf("Ring buffer failed.\n");
         return 1;
     }
-    struct bpf_map* var_map_ptr = bpf_object__find_map_by_name(obj->obj, "_tp_pid_var");
+    struct bpf_map* var_map_ptr = bpf_object__find_map_by_name(obj->obj, "_pid_var");
     bpf_map__update_elem(var_map_ptr, &key, sizeof(unsigned int), &target_pid, sizeof(unsigned int), BPF_ANY);
 
     struct bpf_map* bl_map_ptr = bpf_object__find_map_by_name(obj->obj, "_tp_syscall_bl");
@@ -491,6 +538,34 @@ int main(int argc, char **argv)
 		}
 	}
 
+	struct kprobe_nirs1_bpf *obj_kprobe;
+
+    obj_kprobe = kprobe_nirs1_bpf__open_and_load();
+    if (!obj_kprobe)
+        printf("failed to open and/or load BPF object\n");
+    
+     kprobe_nirs1_bpf__attach(obj_kprobe);
+
+
+	/*  XDP-FILTER  */
+
+	__u32 flags = XDP_FLAGS_SKB_MODE;
+    struct xdp_nirs1_bpf *obj_xdp;
+
+    obj_xdp = xdp_nirs1_bpf__open_and_load();
+    if (!obj_xdp)
+        printf("failed to open and/or load BPF object\n");
+
+    bpf_xdp_attach(2, -1, flags, NULL);
+    bpf_xdp_attach(2, bpf_program__fd(obj_xdp->progs.nirs1), flags, NULL);
+
+	int xdp_fd = bpf_object__find_map_fd_by_name(obj_xdp->obj, "_xdp_event_ringbuf");
+    xdp_ring_buf = ring_buffer__new(xdp_fd, event_logger_network, NULL, NULL);
+    if(!ringBuffer){
+        printf("Ring buffer failed.\n");
+        return 1;
+    }
+
     while(true){
        int err = ring_buffer__poll(ringBuffer, -1);
 	   sleep(2);
@@ -498,6 +573,8 @@ int main(int argc, char **argv)
 
 cleanup:
     tp_all_syscalls_bpf__destroy(obj);
+	kprobe_nirs1_bpf__destroy(obj_kprobe);
+	xdp_nirs1_bpf__destroy(obj_xdp);
     if (links) {
 		for (cpu = 0; cpu < num_cpus; cpu++)
 			bpf_link__destroy(links[cpu]);
