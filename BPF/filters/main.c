@@ -9,6 +9,9 @@
 #include <linux/perf_event.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include <sys/wait.h>
+#include <signal.h> 
+#include <sys/types.h>
 #include "tp-all_syscalls_folder/tp-all_syscalls.skel.h"
 #include "tp-stacktrace_folder/tp-stacktrace.skel.h"
 #include "xdp-filter_folder/xdp-nirs1.skel.h"
@@ -19,6 +22,8 @@
 #include "time.h"
 
 sqlite3 *db;
+
+bool breaking = false;
 
 /*  MISC  */
 char* current_stacktrace;
@@ -222,7 +227,7 @@ struct stacktrace_event {
 #endif /* __PROFILE_H_ */
 
 #define MAX_STACK_RAWTP 100
-unsigned int target_pid = 0;
+pid_t target_pid = 0;
 unsigned int key = 1;
 unsigned int syscalls_blacklist[456] = {0};
 
@@ -234,6 +239,15 @@ struct event{
 };
 
 int event_logger_syscalls(void* ctx, void* data, size_t len){
+	int status;
+	// if (waitpid(target_pid, &status, WNOHANG) > 0){
+	// 	printf("zalyper\n");
+	// 	return -1;
+	// }
+	// else {
+	// 	printf("Nothing\n");
+	// }
+	printf("Syscall\n");
     struct event* evt = (struct event*)data;
 	ring_buffer__poll(ring_buf, -1);
 	ring_buffer__poll(xdp_ring_buf, -1);
@@ -376,7 +390,7 @@ int parse_callgrind_out() {
 	char* end = NULL;
 	__u64 timestamp;
 
-    fp = fopen("../../callgrind_out.txt", "r");
+    fp = fopen("./callgrind_out.txt", "r");
     if (fp == NULL)
         exit(EXIT_FAILURE);
 
@@ -405,12 +419,25 @@ int event_logger_network(void* ctx, void* data, size_t len) {
 	return 1;
 }
 
+// int handle_sigint() {
+// 	kill(target_pid, 9);
+// 	return 1;
+// }
 
 int main(int argc, char **argv)
 {
+	//signal(SIGINT, handle_sigint); 
     if (argc < 2)
         return 0;
-    target_pid = atoi(argv[1]);
+	system("touch ./callgrind_out.txt");
+	char* path_to_binary = argv[1];
+    target_pid = fork();
+	if (target_pid == -1)
+		return -1;
+	
+	if (target_pid == 0){
+		execl("../../valgrind_bin/bin/valgrind", " ", "--tool=callgrind", path_to_binary);
+	}
     create_db();
 
 	current_stacktrace = (char*)calloc(100000, sizeof(char));
@@ -422,9 +449,7 @@ int main(int argc, char **argv)
     }
 
     session = get_max_session_id() + 1;
-    insert_session(session, "test", tms);
-
-	parse_callgrind_out();
+    insert_session(session, path_to_binary, tms);
 
     /*  TP ALL SYSCALLS  */
 
@@ -443,7 +468,8 @@ int main(int argc, char **argv)
         return 1;
     }
     struct bpf_map* var_map_ptr = bpf_object__find_map_by_name(obj->obj, "_pid_var");
-    bpf_map__update_elem(var_map_ptr, &key, sizeof(unsigned int), &target_pid, sizeof(unsigned int), BPF_ANY);
+	if(target_pid)
+    	bpf_map__update_elem(var_map_ptr, &key, sizeof(unsigned int), (unsigned int)&target_pid, sizeof(unsigned int), BPF_ANY);
 
     struct bpf_map* bl_map_ptr = bpf_object__find_map_by_name(obj->obj, "_tp_syscall_bl");
     for (long i = 0; i < 456; ++i){
@@ -566,12 +592,18 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    while(true){
-       int err = ring_buffer__poll(ringBuffer, -1);
-	   sleep(2);
+	int status;
+    while(!breaking){
+		printf("SOMETHING, %d\n", target_pid);
+    	int err = ring_buffer__poll(ringBuffer, 100);
+		sleep(1);
+		if (waitpid(target_pid, &status, WNOHANG) > 0)
+			breaking = true;
     }
 
 cleanup:
+	parse_callgrind_out();
+
     tp_all_syscalls_bpf__destroy(obj);
 	kprobe_nirs1_bpf__destroy(obj_kprobe);
 	xdp_nirs1_bpf__destroy(obj_xdp);
