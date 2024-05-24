@@ -241,7 +241,6 @@ struct event{
 int event_logger_syscalls(void* ctx, void* data, size_t len){
 	int status;
 	// if (waitpid(target_pid, &status, WNOHANG) > 0){
-	// 	printf("zalyper\n");
 	// 	return -1;
 	// }
 	// else {
