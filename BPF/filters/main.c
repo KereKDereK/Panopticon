@@ -20,6 +20,9 @@
 #include <bits/getopt_core.h>
 #include "sqlite3.h"
 #include "time.h"
+#include <sys/resource.h>
+#include <signal.h>
+#include <sys/stat.h>
 
 sqlite3 *db;
 
@@ -64,7 +67,7 @@ __u64 bpf_timestamp_to_epoch_ns(__u64 timestamp){
 
 int create_db(){
     int rc; 
-    rc = sqlite3_open("panopticon.db", &db);
+    rc = sqlite3_open("../filters/panopticon.db", &db);
 
     const char sql1[] = "CREATE TABLE IF NOT EXISTS SESSIONS("  
                         "SESSION_ID INT PRIMARY KEY,"
@@ -104,7 +107,7 @@ int create_db(){
 
 int insert_session(int id, char* binary_name, struct timespec tms){
     int rc; 
-    rc = sqlite3_open("panopticon.db", &db);
+    rc = sqlite3_open("../filters/panopticon.db", &db);
 
     char buffer[1000];
     sprintf(buffer, "INSERT INTO SESSIONS (SESSION_ID, BINARY_NAME, SESSION_START) " 
@@ -116,7 +119,7 @@ int insert_session(int id, char* binary_name, struct timespec tms){
 
 int insert_callgrind(int session_id, char* symbol_name,__u64 timestamp){
     int rc; 
-    rc = sqlite3_open("panopticon.db", &db);
+    rc = sqlite3_open("../filters/panopticon.db", &db);
 
     char buffer[1000];
     sprintf(buffer, "INSERT INTO CALLGRIND_EVENTS (SESSION_ID, SYMBOL_NAME, EVENT_TIMESTAMP) " 
@@ -128,7 +131,7 @@ int insert_callgrind(int session_id, char* symbol_name,__u64 timestamp){
 
 int insert_syscall(int session_id, long syscall_id, __u64 timestamp, char* stack_trace){
     int rc; 
-    rc = sqlite3_open("panopticon.db", &db);
+    rc = sqlite3_open("../filters/panopticon.db", &db);
 
     char buffer[10000];
     sprintf(buffer, "INSERT INTO SYSCALL_EVENTS (SESSION_ID, SYSCALL_ID, SYSCALL_TIMESTAMP, SYSCALL_STACKTRACE) " 
@@ -153,7 +156,7 @@ char* ip_to_str(__u32 src_ip_addr){
 
 int insert_network(int session_id, __u8 ip_proto, __u32 dst_ip, __u32 dst_port, __u32 src_ip, __u32 src_port, __u64 timestamp){
     int rc; 
-    rc = sqlite3_open("panopticon.db", &db);
+    rc = sqlite3_open("../filters/panopticon.db", &db);
 	char source[20] = {0};
 	char dest[20] = {0};
 
@@ -183,7 +186,7 @@ int get_max_session_id() {
     unsigned int max_id = 0;
     int rc; 
     sqlite3_stmt *res;
-    rc = sqlite3_open("panopticon.db", &db);
+    rc = sqlite3_open("../filters/panopticon.db", &db);
 
     char buffer[1000];
     sprintf(buffer, "SELECT (max(SESSION_ID)) FROM SESSIONS LIMIT 1;");
@@ -246,10 +249,9 @@ int event_logger_syscalls(void* ctx, void* data, size_t len){
 	// else {
 	// 	printf("Nothing\n");
 	// }
-	printf("Syscall\n");
     struct event* evt = (struct event*)data;
-	ring_buffer__poll(ring_buf, -1);
-	ring_buffer__poll(xdp_ring_buf, -1);
+	ring_buffer__poll(ring_buf, 1);
+	ring_buffer__poll(xdp_ring_buf, 1);
 
     if(evt->pid == getpid())
         return 1;
@@ -388,11 +390,12 @@ int parse_callgrind_out() {
 	char* name = NULL;
 	char* end = NULL;
 	__u64 timestamp;
+	printf("Initiated\n");
 
-    fp = fopen("./callgrind_out.txt", "r");
-    if (fp == NULL)
-        exit(EXIT_FAILURE);
-
+    fp = fopen("../misc/callgrind_out.txt", "r");
+    if (fp == NULL) {
+		return 0;
+	}
     while ((read = getline(&line, &len, fp)) != -1) {
 		while ((token = strsep(&line, "|"))) {
 			if(!flag){
@@ -410,6 +413,8 @@ int parse_callgrind_out() {
     fclose(fp);
     if (line)
         free(line);
+	printf("Parse ended\n");
+	return 1;
 }
 
 int event_logger_network(void* ctx, void* data, size_t len) {
@@ -418,25 +423,25 @@ int event_logger_network(void* ctx, void* data, size_t len) {
 	return 1;
 }
 
-// int handle_sigint() {
-// 	kill(target_pid, 9);
-// 	return 1;
-// }
+void proc_exit()
+{
+	int code;
+	printf("Child dead\n");
+
+	breaking = true;
+	return;
+}
 
 int main(int argc, char **argv)
 {
-	//signal(SIGINT, handle_sigint); 
-    if (argc < 2)
+	// signal(SIGINT, handle_sigint);
+	signal(SIGCHLD, proc_exit);
+    if (argc < 3)
         return 0;
 	system("touch ./callgrind_out.txt");
 	char* path_to_binary = argv[1];
-    target_pid = fork();
-	if (target_pid == -1)
-		return -1;
-	
-	if (target_pid == 0){
-		execl("../../valgrind_bin/bin/valgrind", " ", "--tool=callgrind", path_to_binary);
-	}
+	int is_callgrind = atoi(argv[2]);
+	// target_pid = atoi(argv[2]);
     create_db();
 
 	current_stacktrace = (char*)calloc(100000, sizeof(char));
@@ -459,6 +464,8 @@ int main(int argc, char **argv)
     obj = tp_all_syscalls_bpf__open_and_load();
     if (!obj)
         printf("failed to open and/or load BPF object\n");
+	
+	tp_all_syscalls_bpf__attach(obj);
 
     int rbFd = bpf_object__find_map_fd_by_name(obj->obj, "_tp_syscalls_ringbuf");
     struct ring_buffer* ringBuffer = ring_buffer__new(rbFd, event_logger_syscalls, NULL, NULL);
@@ -466,16 +473,11 @@ int main(int argc, char **argv)
         printf("Ring buffer failed.\n");
         return 1;
     }
-    struct bpf_map* var_map_ptr = bpf_object__find_map_by_name(obj->obj, "_pid_var");
-	if(target_pid)
-    	bpf_map__update_elem(var_map_ptr, &key, sizeof(unsigned int), (unsigned int)&target_pid, sizeof(unsigned int), BPF_ANY);
 
     struct bpf_map* bl_map_ptr = bpf_object__find_map_by_name(obj->obj, "_tp_syscall_bl");
     for (long i = 0; i < 456; ++i){
         bpf_map__update_elem(bl_map_ptr, &i, sizeof(long), &syscalls_blacklist[i], sizeof(unsigned int), BPF_ANY);
     }
-
-    tp_all_syscalls_bpf__attach(obj);
 
 
     /*  TP STACKTRACE  */
@@ -591,16 +593,52 @@ int main(int argc, char **argv)
         return 1;
     }
 
+	char mkdir_buffer[10];
+	sprintf(mkdir_buffer, "../output/%d", session);
+	mkdir(mkdir_buffer, 0777);
+
+	char valgrind_buffer[1000];
+	sprintf(valgrind_buffer, "--callgrind-out-file=../output/%d/callgrind.out.%d", session, session);
+
+	char tcpdump_buffer[1000];
+	sprintf(tcpdump_buffer, "../output/%d/tcpdump.out.%d.pcap", session, session);
+
+	target_pid = fork();
+	if (target_pid == -1)
+		return -1;
+	if (is_callgrind)
+		if (target_pid == 0){
+			execl("../../valgrind_bin/bin/valgrind", "valgrind", valgrind_buffer, "--tool=callgrind", path_to_binary, (char*)NULL);
+		}
+	else
+		if (target_pid == 0){
+			int asas = execl(path_to_binary, path_to_binary, (char*)NULL);
+			kill(target_pid, 9);
+			goto cleanup;
+		}
+
+	int var_map_fd = bpf_obj_get("/sys/fs/bpf/_pid_var");
+    bpf_map_update_elem(var_map_fd, &key, &target_pid, BPF_ANY);
 	int status;
+	breaking = false;
+
+	int dump_pid = fork();
+	if (dump_pid == -1)
+		return -1;
+	
+	if (dump_pid == 0){
+		printf("\n\nTrying to launch\n\n");
+		execl("/usr/bin/tcpdump", "tcpdump", "-w", tcpdump_buffer, "-i", "any", (char*)NULL);
+		printf("\n\nNOPE\n\n");
+
+	}
     while(!breaking){
-		printf("SOMETHING, %d\n", target_pid);
-    	int err = ring_buffer__poll(ringBuffer, 100);
+    	int err = ring_buffer__poll(ringBuffer, 1);
 		sleep(1);
-		if (waitpid(target_pid, &status, WNOHANG) > 0)
-			breaking = true;
     }
 
 cleanup:
+	kill(dump_pid, SIGINT);
 	parse_callgrind_out();
 
     tp_all_syscalls_bpf__destroy(obj);
@@ -622,5 +660,7 @@ cleanup:
 	tp_stacktrace_bpf__destroy(skel);
 	blazesym_free(symbolizer);
 	free(online_mask);
+
+
 	return -err;
 }

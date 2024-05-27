@@ -98,9 +98,9 @@ int nirs1(struct xdp_md *ctx)
         }
 
         evt->src_ip = htonl(iph->saddr);
-        evt->src_port = htons(tcph->source);
+        evt->src_port = htons(tcph->dest);
         evt->dst_ip = htonl(iph->daddr);
-        evt->dst_port = htons(tcph->dest);
+        evt->dst_port = htons(tcph->source);
         evt->ip_proto = iph->protocol;
         evt->timestamp = bpf_ktime_get_boot_ns();
         bpf_ringbuf_submit(evt, 0);
@@ -143,9 +143,9 @@ int nirs1(struct xdp_md *ctx)
         }
         
         evt->src_ip = htonl(iph->saddr);
-        evt->src_port = htons(udph->source);
+        evt->src_port = htons(udph->dest);
         evt->dst_ip = htonl(iph->daddr);
-        evt->dst_port = htons(udph->dest);
+        evt->dst_port = htons(udph->source);
         evt->ip_proto = iph->protocol;
         evt->timestamp = bpf_ktime_get_boot_ns();
         bpf_ringbuf_submit(evt, 0);
@@ -189,9 +189,9 @@ int nirs1(struct xdp_md *ctx)
         
         
         evt->src_ip = htonl(iph->saddr);
-        evt->src_port = htons(sctph->source);
+        evt->src_port = htons(sctph->dest);
         evt->dst_ip = htonl(iph->daddr);
-        evt->dst_port = htons(sctph->dest);
+        evt->dst_port = htons(sctph->source);
         evt->ip_proto = iph->protocol;
         evt->timestamp = bpf_ktime_get_boot_ns();
         bpf_ringbuf_submit(evt, 0);
