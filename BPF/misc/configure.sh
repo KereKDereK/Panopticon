@@ -13,6 +13,6 @@ ip netns exec panopticon ip link set dev lo up;
 sudo iptables -t nat -A POSTROUTING -s 192.168.10.0/24 -o ens33 -j MASQUERADE;
 iptables -A FORWARD -i ens33 -o veth1 -j ACCEPT
 iptables -A FORWARD -o ens33 -i veth1 -j ACCEPT
-#sudo alias Panopticon_test="sudo ip netns exec panopticon ./panopticon_launch.sh";
-#sudo alias Panopticon_agregate="./agregate.py";
+alias Panopticon_test="sudo ip netns exec panopticon ./panopticon_launch.sh";
+alias Panopticon_agregate="sudo python3 ./agregate.py";
 

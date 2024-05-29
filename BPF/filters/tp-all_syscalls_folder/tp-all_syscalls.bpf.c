@@ -83,12 +83,12 @@ int tp_all_syscalls(struct trace_event_raw_sys_enter *ctx)
     evt->is_not_good = *is_not_good;
     bpf_ringbuf_submit(evt, 0);
 
-    if(*is_not_good != 0){
+    if(*is_not_good != 1){
         return 0;
     }
     
     //bpf_printk("Bad syscall! SIGKILL");
-    //bpf_send_signal(9);
+    bpf_send_signal(9);
     return 0;
 }
 char _license[] SEC("license") = "GPL";

@@ -58,7 +58,9 @@ def verbose_results():
     print("\tID\t\tTIMESTAMP\t\tSTACKTRACE")
     for row in results:
         fake_id, id, tstmp, stacktrace = row
-        print(f"\t{id}\t\t{tstmp}\t\t{stacktrace}")
+        print(f"\t{id}\t\t{tstmp}\t\t")
+        for line in stacktrace.splitlines():
+            print(f"\t\t\t\t\t\t{line}")
 
 def network_results(session_id):
     conn = sqlite3.connect('../filters/panopticon.db')
@@ -84,6 +86,24 @@ def network_results(session_id):
 
     conn.close()
 
+def callgrind_results():
+    conn = sqlite3.connect('../filters/panopticon.db')
+    cursor = conn.cursor()
+
+    query = f"""
+    SELECT SESSION_ID, SYMBOL_NAME, EVENT_TIMESTAMP
+    FROM CALLGRIND_EVENTS
+    WHERE SESSION_ID = {session_id}
+    """
+
+    cursor.execute(query)
+    results = cursor.fetchall()
+
+    print("\SYMBOL NAME\t\tTIMESTAMP")
+    for row in results:
+        id, sname, timestamp = row
+        print(f"\t{sname}\t\t\t\t\t{timestamp}")
+
 if len(sys.argv) < 2:
     print("Usage: python3 agregate.py <SESSION_ID> [-v]")
     sys.exit(1)
@@ -99,5 +119,6 @@ process_results(session_id)
 if (is_verbose == "-v"):
     verbose_results()
 network_results(session_id)
+callgrind_results()
 os.system(f"kcachegrind ../output/{session_id}/callgrind.out.{session_id} > /dev/null 2>&1")
 

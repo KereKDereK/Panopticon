@@ -1,3 +1,7 @@
+#include <iostream>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,13 +10,24 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <unistd.h>
 
-#define PING_COUNT 5  // Количество пингов
+#define PING_COUNT 5
 
 int main() {
-    printf("Program started\n");
+    if (ptrace(PTRACE_TRACEME, 0, 1, 0) < 0) {
+        std::cerr << "Ptrace error" << std::endl;
+        return 1;
+    }
 
+    std::cout << "Doing something..." << std::endl;
+
+    int status;
+    waitpid(-1, &status, 0);
+
+    if (WIFSTOPPED(status)) {
+        std::cout << "Program is under debug!" << std::endl;
+        return 1;
+    }
 
     struct sockaddr_in server_addr;
     struct hostent *host_info;
@@ -31,7 +46,6 @@ int main() {
         return 1;
     }
 
-    printf("Before first ping\n");
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(80);
@@ -56,6 +70,8 @@ int main() {
 
         sleep(1);
     }
+
+    std::cout << "End of program" << std::endl;
 
     return 0;
 }

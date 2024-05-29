@@ -243,20 +243,11 @@ struct event{
 
 int event_logger_syscalls(void* ctx, void* data, size_t len){
 	int status;
-	// if (waitpid(target_pid, &status, WNOHANG) > 0){
-	// 	return -1;
-	// }
-	// else {
-	// 	printf("Nothing\n");
-	// }
     struct event* evt = (struct event*)data;
 	ring_buffer__poll(ring_buf, 1);
 	ring_buffer__poll(xdp_ring_buf, 1);
-
     if(evt->pid == getpid())
         return 1;
-    //printf("%d:%ld:%lld\n", evt->pid, evt->syscall_number, evt->timestamp);
-	//printf("Timestamp: %llu\n", bpf_timestamp_to_epoch_ns(evt->timestamp));
 	insert_syscall(session, evt->syscall_number, bpf_timestamp_to_epoch_ns(evt->timestamp), current_stacktrace);
     return 0;
 }
@@ -356,25 +347,21 @@ void show_stack_trace(__u64 *stack, int stack_sz, pid_t pid)
 static int stacktrace_event_handler(void *_ctx, void *data, size_t size) {
 	struct stacktrace_event *event = data;
 
-    if(event->pid != target_pid)
-        return 1;
+    // if(event->pid != target_pid)
+    //     return 1;
 
 	if (event->kstack_sz <= 0 && event->ustack_sz <= 0)
 		return 1;
 
 	//printf("COMM: %s (pid=%d) @ CPU %d\n", event->comm, event->pid, event->cpu_id);
 
-	// if (event->kstack_sz > 0) {
-	// 	printf("Timestamp: %lld\tKernel:\n", event->timestamp);
-	// 	show_stack_trace(event->kstack, event->kstack_sz / sizeof(__u64), 0);
-	// } else {
-	// 	printf("No Kernel Stack\n");
-	// }
-
-	if (event->ustack_sz > 0) {
-		//printf("Userspace:\n");
-		show_stack_trace(event->ustack, event->ustack_sz / sizeof(__u64), event->pid);
+	if (event->kstack_sz > 0) {
+		show_stack_trace(event->kstack, event->kstack_sz / sizeof(__u64), 0);
 	}
+
+	// if (event->ustack_sz > 0) {
+	// 	show_stack_trace(event->ustack, event->ustack_sz / sizeof(__u64), event->pid);
+	// }
 
 	return 0;
 }
@@ -390,7 +377,6 @@ int parse_callgrind_out() {
 	char* name = NULL;
 	char* end = NULL;
 	__u64 timestamp;
-	printf("Initiated\n");
 
     fp = fopen("../misc/callgrind_out.txt", "r");
     if (fp == NULL) {
@@ -426,7 +412,7 @@ int event_logger_network(void* ctx, void* data, size_t len) {
 void proc_exit()
 {
 	int code;
-	printf("Child dead\n");
+	printf("Child process ended\n");
 
 	breaking = true;
 	return;
@@ -456,9 +442,14 @@ int main(int argc, char **argv)
     insert_session(session, path_to_binary, tms);
 
     /*  TP ALL SYSCALLS  */
+	//syscalls_blacklist[0] = 1;
+    //syscalls_blacklist[1] = 1;
+	//syscalls_blacklist[2] = 1;
 
-    syscalls_blacklist[0] = 1;
-    syscalls_blacklist[1] = 1;
+	syscalls_blacklist[46] = 1;
+	syscalls_blacklist[44] = 1;
+	syscalls_blacklist[14] = 1;
+
     struct tp_all_syscalls_bpf *obj;
 
     obj = tp_all_syscalls_bpf__open_and_load();
@@ -483,7 +474,7 @@ int main(int argc, char **argv)
     /*  TP STACKTRACE  */
 
     const char *online_cpus_file = "/sys/devices/system/cpu/online";
-	int freq = 1, pid = -1, cpu;
+	int freq = 1, pid = -1, cpu = -1;
 	struct tp_stacktrace_bpf *skel = NULL;
 	struct perf_event_attr attr;
 	struct bpf_link **links = NULL;
@@ -543,35 +534,13 @@ int main(int argc, char **argv)
 	attr.sample_freq = freq;
 	attr.freq = 1;
 
-	for (cpu = 0; cpu < num_cpus; cpu++) {
-		/* skip offline/not present CPUs */
-		if (cpu >= num_online_cpus || !online_mask[cpu])
-			continue;
-
-		/* Set up performance monitoring on a CPU/Core */
-		pefd = perf_event_open(&attr, pid, cpu, -1, PERF_FLAG_FD_CLOEXEC);
-		if (pefd < 0) {
-			fprintf(stderr, "Fail to set up performance monitor on a CPU/Core\n");
-			err = -1;
-			goto cleanup;
-		}
-		pefds[cpu] = pefd;
-
-		/* Attach a BPF program on a CPU */
-		links[cpu] = bpf_program__attach_perf_event(skel->progs.profile, pefd);
-		if (!links[cpu]) {
-			err = -1;
-			goto cleanup;
-		}
-	}
-
 	struct kprobe_nirs1_bpf *obj_kprobe;
 
     obj_kprobe = kprobe_nirs1_bpf__open_and_load();
     if (!obj_kprobe)
         printf("failed to open and/or load BPF object\n");
     
-     kprobe_nirs1_bpf__attach(obj_kprobe);
+    kprobe_nirs1_bpf__attach(obj_kprobe);
 
 
 	/*  XDP-FILTER  */
@@ -595,7 +564,6 @@ int main(int argc, char **argv)
 
 	char mkdir_buffer[10];
 	sprintf(mkdir_buffer, "../output/%d", session);
-	mkdir(mkdir_buffer, 0777);
 
 	char valgrind_buffer[1000];
 	sprintf(valgrind_buffer, "--callgrind-out-file=../output/%d/callgrind.out.%d", session, session);
@@ -603,19 +571,47 @@ int main(int argc, char **argv)
 	char tcpdump_buffer[1000];
 	sprintf(tcpdump_buffer, "../output/%d/tcpdump.out.%d.pcap", session, session);
 
-	target_pid = fork();
+	mkdir(mkdir_buffer, 0777);
+	target_pid = vfork();
 	if (target_pid == -1)
 		return -1;
-	if (is_callgrind)
+	if (is_callgrind) {
 		if (target_pid == 0){
+			//setuid(1000);
 			execl("../../valgrind_bin/bin/valgrind", "valgrind", valgrind_buffer, "--tool=callgrind", path_to_binary, (char*)NULL);
 		}
+	}
 	else
+	{
 		if (target_pid == 0){
-			int asas = execl(path_to_binary, path_to_binary, (char*)NULL);
+			execl(path_to_binary, path_to_binary, " ", (char*)NULL);
 			kill(target_pid, 9);
+			printf("failed\n");
 			goto cleanup;
 		}
+	}
+
+	for (cpu = 0; cpu < num_cpus; cpu++) {
+		/* skip offline/not present CPUs */
+		if (cpu >= num_online_cpus || !online_mask[cpu])
+			continue;
+
+		/* Set up performance monitoring on a CPU/Core */
+		pefd = perf_event_open(&attr, target_pid, cpu, -1, PERF_FLAG_FD_CLOEXEC);
+		if (pefd < 0) {
+			fprintf(stderr, "Fail to set up performance monitor on a CPU/Core\n");
+			err = -1;
+			goto cleanup;
+		}
+		pefds[cpu] = pefd;
+
+		/* Attach a BPF program on a CPU */
+		links[cpu] = bpf_program__attach_perf_event(skel->progs.profile, pefd);
+		if (!links[cpu]) {
+			err = -1;
+			goto cleanup;
+		}
+	}
 
 	int var_map_fd = bpf_obj_get("/sys/fs/bpf/_pid_var");
     bpf_map_update_elem(var_map_fd, &key, &target_pid, BPF_ANY);
@@ -627,9 +623,7 @@ int main(int argc, char **argv)
 		return -1;
 	
 	if (dump_pid == 0){
-		printf("\n\nTrying to launch\n\n");
 		execl("/usr/bin/tcpdump", "tcpdump", "-w", tcpdump_buffer, "-i", "any", (char*)NULL);
-		printf("\n\nNOPE\n\n");
 
 	}
     while(!breaking){

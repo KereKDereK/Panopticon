@@ -52,22 +52,6 @@ int profile(void *ctx)
 	struct stacktrace_event *event;
 	int cp;
 
-	u32 *target_pid;
-    u32 key = 1;
-    if (!&_pid_var){
-        return 0;
-    }
-    target_pid = bpf_map_lookup_elem(&_pid_var, &key);
-
-    if(!target_pid){
-        //bpf_printk("No pid specified. Abort.");
-        return 1;
-    }
-
-    if (pid != *target_pid){
-        return 0;
-    }
-
 	event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 	if (!event)
 		return 1;
